@@ -10,9 +10,14 @@ internal static class Program
     {
         try
         {
-            Run(args.Length == 0 ? "127.0.0.1:5055" : args[0]);
-            Console.WriteLine("PASS: SDK handshake, encrypted authentication, lobby, redirect, rooms, " +
-                              "cached/live events, properties, fragmentation, and leave cleanup.");
+            string address = args.Length == 0 ? "127.0.0.1:5055" : args[0];
+            if (args.Length > 1 && args[1] == "--full-room")
+                FullRoomScenario.Run(address, args.Length > 2 ? int.Parse(args[2]) : 10);
+            else if (args.Length > 1 && args[1] == "--rc")
+                RcCompatibilityScenario.Run(address);
+            else
+                Run(address);
+            Console.WriteLine("PASS: all checks in the selected SDK scenario completed.");
             return 0;
         }
         catch (Exception error)
@@ -102,7 +107,8 @@ internal static class Program
             room[(byte)251] is true), "empty-room removal");
     }
 
-    internal static void PumpUntil(TestClient[] clients, Func<bool> condition, string step)
+    internal static void PumpUntil(TestClient[] clients, Func<bool> condition, string step,
+                                   bool announce = true)
     {
         var elapsed = Stopwatch.StartNew();
         while (!condition())
@@ -113,105 +119,13 @@ internal static class Program
                 client.Service();
             Thread.Sleep(5);
         }
-        Console.WriteLine($"Verified {step}");
+        if (announce)
+            Console.WriteLine($"Verified {step}");
     }
 
-    private static void Check(bool condition, string description)
+    internal static void Check(bool condition, string description)
     {
         if (!condition)
             throw new InvalidOperationException($"Failed: {description}");
-    }
-}
-
-internal sealed class TestClient : IPhotonPeerListener, IDisposable
-{
-    private readonly PhotonPeer peer;
-    private readonly string name;
-    private readonly List<OperationResponse> responses = [];
-    public List<EventData> Events { get; } = [];
-    public bool Authenticated { get; private set; }
-    private bool disconnected;
-
-    public TestClient(string name)
-    {
-        this.name = name;
-        peer = new PhotonPeer(this, ConnectionProtocol.Udp)
-        {
-            SerializationProtocolType = SerializationProtocol.GpBinaryV16,
-        };
-    }
-
-    public void Connect(string address)
-    {
-        disconnected = false;
-        Authenticated = false;
-        if (!peer.Connect(address, ""))
-            throw new InvalidOperationException($"{name}: could not start connection");
-    }
-
-    public void Reconnect(string address, TestClient[] clients)
-    {
-        Disconnect();
-        Program.PumpUntil(clients, () => disconnected, $"{name} master disconnect");
-        Connect(address);
-        Program.PumpUntil(clients, () => Authenticated, $"{name} game authentication");
-    }
-
-    public void Send(byte operation, Dictionary<byte, object> parameters,
-                     bool reliable = true, byte channel = 0, bool encrypted = false)
-    {
-        // Exercise the same legacy SDK entry point used by the shipped game.
-#pragma warning disable CS0618
-        bool queued = peer.OpCustom(operation, parameters, reliable, channel, encrypted);
-#pragma warning restore CS0618
-        if (!queued)
-            throw new InvalidOperationException($"{name}: failed to enqueue operation {operation}");
-    }
-
-    public bool HasResponse(byte operation) => responses.Any(response => response.OperationCode == operation);
-
-    public OperationResponse TakeResponse(byte operation)
-    {
-        var response = responses.First(response => response.OperationCode == operation);
-        responses.Remove(response);
-        if (response.ReturnCode != 0)
-            throw new InvalidOperationException($"{name}: operation {operation} returned " +
-                                                $"{response.ReturnCode}: {response.DebugMessage}");
-        return response;
-    }
-
-    public void Service() => peer.Service();
-    public void Disconnect() => peer.Disconnect();
-    public void Dispose() { peer.Disconnect(); peer.Service(); }
-    public void OnEvent(EventData message) => Events.Add(message);
-    public void OnOperationResponse(OperationResponse response)
-    {
-        responses.Add(response);
-        if (response.OperationCode == 230)
-        {
-            TakeResponse(230);
-            Authenticated = true;
-        }
-    }
-
-    public void OnStatusChanged(StatusCode status)
-    {
-        if (status == StatusCode.Connect)
-            peer.EstablishEncryption();
-        else if (status == StatusCode.EncryptionEstablished)
-            Send(230, new() { [220] = "interop-check", [224] = "", [225] = name }, encrypted: true);
-        else if (status == StatusCode.Disconnect)
-        {
-            Authenticated = false;
-            disconnected = true;
-        }
-        else
-            Console.WriteLine($"{name}: {status}");
-    }
-
-    public void DebugReturn(DebugLevel level, string message)
-    {
-        if (level <= DebugLevel.WARNING)
-            Console.WriteLine($"{name} {level}: {message}");
     }
 }

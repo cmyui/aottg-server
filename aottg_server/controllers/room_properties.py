@@ -5,6 +5,8 @@ from aottg_server.adapters.photon.messages import ProtocolError
 from aottg_server.domain import values as v
 from aottg_server.domain.models import CreateRoom, Room, RoomChanges
 
+from .parameters import RequestParameters
+
 
 def integer_property(properties: v.Properties, key: RP, default: int) -> int:
     value = properties.get(v.ByteValue(key))
@@ -33,12 +35,18 @@ def create_request(name: str, lobby: str, properties: v.Properties) -> CreateRoo
     return CreateRoom(
         name=name,
         lobby_name=lobby,
-        max_players=integer_property(properties, RP.MAX_PLAYERS, 10),
+        max_players=integer_property(properties, RP.MAX_PLAYERS, 0),
         is_open=boolean_property(properties, RP.IS_OPEN, True),
         is_visible=boolean_property(properties, RP.IS_VISIBLE, True),
         cleanup_cache_on_leave=boolean_property(properties, RP.CLEANUP_CACHE_ON_LEAVE, True),
         properties=custom_properties(properties),
+        lobby_property_names=lobby_property_names(properties),
     )
+
+
+def lobby_property_names(properties: v.Properties) -> tuple[str, ...]:
+    selected = properties.get(v.ByteValue(RP.PROPERTIES_IN_LOBBY), v.StringArray(()))
+    return RequestParameters({0: selected}).strings(0)
 
 
 def room_changes(properties: v.Properties) -> RoomChanges:
@@ -56,11 +64,21 @@ def room_changes(properties: v.Properties) -> RoomChanges:
         master_actor_id=integer_property(properties, RP.MASTER_CLIENT_ID, 0)
         if v.ByteValue(RP.MASTER_CLIENT_ID) in properties
         else None,
+        cleanup_cache_on_leave=boolean_property(properties, RP.CLEANUP_CACHE_ON_LEAVE, True)
+        if v.ByteValue(RP.CLEANUP_CACHE_ON_LEAVE) in properties
+        else None,
+        lobby_property_names=lobby_property_names(properties)
+        if v.ByteValue(RP.PROPERTIES_IN_LOBBY) in properties
+        else None,
     )
 
 
-def room_properties(room: Room, *, removed: bool = False) -> v.PropertyTable:
-    properties = dict(room.properties)
+def room_properties(room: Room, *, removed: bool = False, lobby: bool = False) -> v.PropertyTable:
+    properties = {
+        key: value
+        for key, value in room.properties.items()
+        if not lobby or isinstance(key, v.StringValue) and key.value in room.lobby_property_names
+    }
     properties.update(
         {
             v.ByteValue(RP.MAX_PLAYERS): v.ByteValue(room.max_players),

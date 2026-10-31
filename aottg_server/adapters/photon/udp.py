@@ -4,6 +4,7 @@ import asyncio
 import logging
 import struct
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from typing import cast
 from uuid import uuid4
@@ -25,6 +26,22 @@ logger = logging.getLogger(__name__)
 NetworkAddress = tuple[str, int]
 CommandKey = tuple[int, int]
 PEER_TIMEOUT_SECONDS = 20
+MAX_IN_FLIGHT_COMMANDS = 64
+MAX_OUTBOUND_COMMANDS = 32768
+MAX_OUTBOUND_BYTES = 32 * 1024 * 1024
+SEQUENCE_MASK = 0xFFFFFFFF
+PACKET_FLUSH_SECONDS = 0.002
+
+
+def next_sequence(sequence: int) -> int:
+    return (sequence + 1) & SEQUENCE_MASK
+
+
+def is_newer(sequence: int, previous: int) -> bool:
+    distance = (sequence - previous) & SEQUENCE_MASK
+    return 0 < distance < 0x80000000
+
+
 INITIALIZE_REQUEST = b"\xf3\x00"
 INITIALIZE_RESPONSE = b"\xf3\x01\x00\x00\x00\x00\x00"
 
@@ -59,25 +76,44 @@ class UdpConnection:
     fragments: dict[CommandKey, FragmentAssembly] = field(default_factory=dict)
     pending_acknowledgments: dict[CommandKey, PendingCommand] = field(default_factory=dict)
 
+    outbound_queue: deque[Command] = field(default_factory=deque)
+    outbound_bytes: int = 0
+    packet_commands: list[Command] = field(default_factory=list)
+    packet_bytes: int = 12
+
     @property
     def role(self) -> ServerRole:
         return self.endpoint.role
 
     def transmit(self, command: Command) -> None:
-        datagram = Datagram(self.peer_id, timestamp_ms(), self.challenge, (command,))
-        self.endpoint.send_datagram(datagram, self.address)
+        self.endpoint.send_command(self, command)
 
     def send_reliable(self, kind: CommandType, channel: int, payload: bytes = b"") -> None:
         if self.closed:
             return
-        if len(self.pending_acknowledgments) >= MAX_PENDING_COMMANDS:
+        size = 12 + len(payload)
+        if (
+            len(self.outbound_queue) >= MAX_OUTBOUND_COMMANDS
+            or self.outbound_bytes + size > MAX_OUTBOUND_BYTES
+        ):
+            logger.warning("Disconnecting slow consumer %s: outbound queue full", self.address)
             self.close()
             return
-        sequence = self.outgoing_sequences.get(channel, 0) + 1
+        sequence = next_sequence(self.outgoing_sequences.get(channel, 0))
         self.outgoing_sequences[channel] = sequence
-        command = Command(kind, channel, True, sequence, payload)
-        self.pending_acknowledgments[channel, sequence] = PendingCommand(command, time.monotonic())
-        self.transmit(command)
+        self.outbound_queue.append(Command(kind, channel, True, sequence, payload))
+        self.outbound_bytes += size
+        self._flush_outbound()
+
+    def _flush_outbound(self) -> None:
+        while self.outbound_queue and len(self.pending_acknowledgments) < MAX_IN_FLIGHT_COMMANDS:
+            command = self.outbound_queue.popleft()
+            self.outbound_bytes -= 12 + len(command.payload)
+            self.pending_acknowledgments[command.channel, command.sequence] = PendingCommand(
+                command,
+                time.monotonic(),
+            )
+            self.transmit(command)
 
     def send(self, payload: bytes, delivery: Delivery = Delivery()) -> None:
         if self.closed:
@@ -89,7 +125,7 @@ class UdpConnection:
         elif delivery.reliable:
             self.send_reliable(CommandType.RELIABLE, delivery.channel, payload)
         else:
-            sequence = self.outgoing_unreliable_sequences.get(delivery.channel, 0) + 1
+            sequence = next_sequence(self.outgoing_unreliable_sequences.get(delivery.channel, 0))
             self.outgoing_unreliable_sequences[delivery.channel] = sequence
             self.transmit(
                 Command(
@@ -104,7 +140,7 @@ class UdpConnection:
     def _send_fragments(self, payload: bytes, channel: int) -> None:
         fragment_size = self.mtu - 44
         count = (len(payload) + fragment_size - 1) // fragment_size
-        start_sequence = self.outgoing_sequences.get(channel, 0) + 1
+        start_sequence = next_sequence(self.outgoing_sequences.get(channel, 0))
         for index in range(count):
             offset = index * fragment_size
             header = struct.pack(">IIIII", start_sequence, count, index, len(payload), offset)
@@ -130,6 +166,7 @@ class UdpConnection:
                 raise ProtocolError("Malformed acknowledgment")
             sequence = int.from_bytes(command.payload[:4], "big")
             self.pending_acknowledgments.pop((command.channel, sequence), None)
+            self._flush_outbound()
         elif command.reliable:
             self.acknowledge(command, remote_timestamp)
             self._receive_reliable(command)
@@ -138,21 +175,20 @@ class UdpConnection:
 
     def _receive_reliable(self, command: Command) -> None:
         received = self.incoming_sequences.get(command.channel, 0)
-        if command.sequence <= received:
+        if not is_newer(command.sequence, received):
             return  # A retransmission is acknowledged, but never delivered twice.
-        if (
-            command.sequence - received > MAX_PENDING_COMMANDS
-            or len(self.receive_queue) >= MAX_PENDING_COMMANDS
-        ):
+        if (command.sequence - received) & SEQUENCE_MASK > MAX_PENDING_COMMANDS or len(
+            self.receive_queue
+        ) >= MAX_PENDING_COMMANDS:
             self.close()
             return
         self.receive_queue[command.channel, command.sequence] = command
         while not self.closed:
-            next_sequence = self.incoming_sequences.get(command.channel, 0) + 1
-            queued = self.receive_queue.pop((command.channel, next_sequence), None)
+            expected_sequence = next_sequence(self.incoming_sequences.get(command.channel, 0))
+            queued = self.receive_queue.pop((command.channel, expected_sequence), None)
             if queued is None:
                 return
-            self.incoming_sequences[command.channel] = next_sequence
+            self.incoming_sequences[command.channel] = expected_sequence
             self._dispatch(queued)
 
     def _dispatch(self, command: Command) -> None:
@@ -174,9 +210,9 @@ class UdpConnection:
         if len(command.payload) < 4:
             raise ProtocolError("Truncated unreliable command")
         sequence = int.from_bytes(command.payload[:4], "big")
-        if sequence <= self.incoming_unreliable_sequences.get(command.channel, 0):
+        if not is_newer(sequence, self.incoming_unreliable_sequences.get(command.channel, 0)):
             return
-        if command.sequence > self.incoming_sequences.get(command.channel, 0):
+        if is_newer(command.sequence, self.incoming_sequences.get(command.channel, 0)):
             return  # A future movement update will supersede this out-of-order update.
         self.incoming_unreliable_sequences[command.channel] = sequence
         self._deliver(command.payload[4:], Delivery(command.channel, reliable=False))
@@ -190,7 +226,7 @@ class UdpConnection:
         if (
             not 0 < count <= MAX_PENDING_COMMANDS
             or not 0 < total <= MAX_MESSAGE_BYTES
-            or command.sequence != start + index
+            or command.sequence != (start + index) & SEQUENCE_MASK
         ):
             raise ProtocolError("Invalid fragment header")
         key = command.channel, start
@@ -230,12 +266,17 @@ class UdpConnection:
     def close(self) -> None:
         if not self.closed:
             self.closed = True
+            self.outbound_queue.clear()
+            self.outbound_bytes = 0
+            self.pending_acknowledgments.clear()
+            self.receive_queue.clear()
+            self.fragments.clear()
             self.endpoint.remove(self)
 
 
 class UdpEndpoint(asyncio.DatagramProtocol):
     def __init__(
-        self, handler: ConnectionHandler, role: ServerRole, max_connections: int = 32
+        self, handler: ConnectionHandler, role: ServerRole, max_connections: int = 512
     ) -> None:
         self.handler = handler
         self.role = role
@@ -244,6 +285,8 @@ class UdpEndpoint(asyncio.DatagramProtocol):
         self._next_peer_id = 1
         self._transport: asyncio.DatagramTransport | None = None
         self._timer: asyncio.TimerHandle | None = None
+        self._packet_timer: asyncio.TimerHandle | None = None
+        self._buffered_connections: set[UdpConnection] = set()
 
     def connection_made(self, transport: asyncio.BaseTransport) -> None:
         if not isinstance(transport, asyncio.DatagramTransport):
@@ -252,6 +295,9 @@ class UdpEndpoint(asyncio.DatagramProtocol):
         self._tick()
 
     def connection_lost(self, exc: Exception | None) -> None:
+        self._transport = None
+        if self._packet_timer:
+            self._packet_timer.cancel()
         if self._timer:
             self._timer.cancel()
         for connection in tuple(self._connections.values()):
@@ -266,6 +312,42 @@ class UdpEndpoint(asyncio.DatagramProtocol):
 
     def error_received(self, exc: Exception) -> None:
         logger.debug("UDP socket error: %s", exc)
+
+    def send_command(self, connection: UdpConnection, command: Command) -> None:
+        size = 12 + len(command.payload)
+        if (
+            connection.packet_bytes + size > connection.mtu
+            or len(connection.packet_commands) >= 255
+        ):
+            self._flush_connection(connection)
+        connection.packet_commands.append(command)
+        connection.packet_bytes += size
+        self._buffered_connections.add(connection)
+        if self._packet_timer is None:
+            self._packet_timer = asyncio.get_running_loop().call_later(
+                PACKET_FLUSH_SECONDS,
+                self._flush_packets,
+            )
+
+    def _flush_connection(self, connection: UdpConnection) -> None:
+        if connection.packet_commands:
+            self.send_datagram(
+                Datagram(
+                    connection.peer_id,
+                    timestamp_ms(),
+                    connection.challenge,
+                    tuple(connection.packet_commands),
+                ),
+                connection.address,
+            )
+            connection.packet_commands.clear()
+            connection.packet_bytes = 12
+        self._buffered_connections.discard(connection)
+
+    def _flush_packets(self) -> None:
+        self._packet_timer = None
+        for connection in tuple(self._buffered_connections):
+            self._flush_connection(connection)
 
     def send_datagram(self, datagram: Datagram, address: NetworkAddress) -> None:
         if self._transport is not None:
@@ -315,6 +397,7 @@ class UdpEndpoint(asyncio.DatagramProtocol):
         return connection
 
     def remove(self, connection: UdpConnection) -> None:
+        self._flush_connection(connection)
         self._connections.pop(connection.address, None)
         self.handler.disconnected(connection)
         logger.info("%s disconnected: %s", self.role.value, connection.address)

@@ -15,7 +15,8 @@ class ValueType(IntEnum):
     INTEGER = 105
     SHORT = 107
     LONG = 108
-    STRING_ARRAY = 110
+    STRING_ARRAY = 97
+    INTEGER_ARRAY = 110
     BOOLEAN = 111
     STRING = 115
     BYTES = 120
@@ -46,6 +47,7 @@ class CommandType(IntEnum):
 
 
 class OperationCode(IntEnum):
+    FIND_FRIENDS = 222
     JOIN_RANDOM_ROOM = 225
     JOIN_ROOM = 226
     CREATE_ROOM = 227
@@ -63,6 +65,9 @@ class ParameterCode(IntEnum):
     REMOVE_GROUPS = 239
     ADD_GROUPS = 238
     LOBBY_NAME = 213
+    LOBBY_TYPE = 212
+    MATCHMAKING_MODE = 223
+    CLEANUP_CACHE_ON_LEAVE = 241
     JOIN_MODE = 215
     AUTH_TYPE = 217
     APP_VERSION = 220
@@ -91,6 +96,8 @@ class ParameterCode(IntEnum):
 
 
 class EventCode(IntEnum):
+    CLOSE_CONNECTION = 203
+    TRANSFER_MASTER = 208
     ROOM_LIST = 230
     ROOM_LIST_UPDATE = 229
     LOBBY_STATISTICS = 226

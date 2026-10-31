@@ -47,6 +47,9 @@ Replace the example address with the server's actual LAN or VPN address. Clients
 enter that address in the game's LAN menu. Both UDP ports must be reachable; an
 SSH TCP tunnel does not forward them. `--port N` changes the master port to `N`
 and the game port to `N+1`. `--verbose` enables per-operation debugging.
+`--max-connections N` sets the connection limit per endpoint (default: 512).
+Room capacity comes from the client, up to 255 players; a capacity of zero means
+no explicit limit, subject to the same 255-player protocol ceiling.
 
 The default bind address is loopback. For private games across the internet, use
 a private VPN or restrict both UDP ports to your players. This implementation
@@ -60,7 +63,7 @@ transport. Responses and gameplay events are sent without encryption.
 | Package | Responsibility |
 | --- | --- |
 | `domain` | Typed room, player, session, event, and value models |
-| `services` | Room lifecycle, property updates, recipient selection, event cache |
+| `services` | Room lifecycle, matchmaking, friend lookup, property updates, event routing/cache |
 | `ports` | Typed connection and repository interfaces |
 | `repositories` | In-memory implementations of repository interfaces |
 | `controllers` | Validate operation parameters and translate requests/results |
@@ -78,8 +81,12 @@ payloads are relayed without interpreting game-specific RPC contents.
 
 The transport acknowledges and retransmits reliable messages, orders each channel,
 deduplicates packets, rejects stale unreliable updates, and reassembles fragments.
+It batches commands into MTU-sized packets with a 2 ms flush timer and keeps at
+most 64 reliable commands in flight per connection. Remaining reliable commands
+wait in a bounded queue (32,768 commands or 32 MiB); clients that exhaust it are
+disconnected. Broadcasts encode each event once before sending it to recipients.
 It limits peers, queued commands, message size, nesting, and cached event count.
-It is intended for small, trusted groups, not an unrestricted public service.
+It is intended for private, trusted groups, not an unrestricted public service.
 
 ## Development and verification
 
@@ -111,23 +118,59 @@ late-join replay, properties, a 24 KB fragmented event, unreliable delivery, hos
 departure, and empty-room removal. The SDK is referenced locally and must not be
 committed. CI does not run this harness because the SDK is not distributed here.
 
+After building the harness, run the extended scenarios against a running server:
+
+```sh
+dotnet run --no-build --project tools/InteropCheck -- 127.0.0.1:5055 --rc
+dotnet run --no-build --project tools/InteropCheck -- 127.0.0.1:5055 --full-room 64
+```
+
+The RC scenario checks join-or-create, matchmaking, friend lookup, filtered lobby
+properties, master transfer and late-join restoration, targeted kick notifications,
+interest groups, property comparisons, prefab cache removal, Unity custom values,
+fragmented custom-level-shaped RPCs, and ordered replay of 3,000 cached events.
+These are protocol checks using representative payloads; they do not execute RC
+scripts or render maps in Unity.
+
+The full-room scenario accepts capacities from 2 to 255. It checks capacity
+enforcement, reliable all-to-all delivery, then 50 movement updates per player
+at 10 Hz. Every client must receive more than 90% of the unreliable updates.
+On the development Mac, 64 SDK players delivered 100% of movement updates. A
+255-player run formed the room and delivered all 64,770 reliable messages, but
+delivered only 83.29% of movement updates and failed the performance check.
+Both harness and server ran on the same machine alongside two Unity clients;
+these results are local compatibility measurements, not hosting capacity guarantees.
+
 ## Compatibility scope
 
-The target is the RC client using Photon UDP and GpBinaryV16. Supported operations
-include guest authentication, default/named lobby entry, create/join by room name,
-leave, property reads/updates, event relay/cache, and interest groups.
+The target is the RC client using Photon UDP and GpBinaryV16.
 
-Not implemented: random matchmaking, join-or-create/rejoin, actor TTL, persisted
-rooms, cloud authentication, friends, SQL lobbies, legacy cache-merge, TCP/WebSocket
-transports, and modern Photon protocols. All custom room properties are currently
-included in lobby updates. Compare-and-swap applies to custom/player properties;
-reserved room metadata is not part of that comparison. Master selection on leave
-uses the lowest remaining actor ID. Game-specific master-switch RPCs are relayed
-without changing the server's master-recipient selection.
+| Capability | Support |
+| --- | --- |
+| Connections | Guest authentication, master-to-game redirects, reliable/unreliable UDP, fragmentation |
+| Rooms and lobbies | Default/named lobbies, create/join/join-or-create, leave, capacity enforcement, selected lobby properties |
+| Matchmaking | Oldest available room, serial rotation, random selection, advertised property/capacity filters |
+| Friends | Online guest IDs and current room within the same application namespace |
+| Properties | Player/custom room properties and reserved metadata, atomic compare-and-swap, optional broadcasts |
+| Events | Actor targeting, others/all/master recipients, interest groups, caching/replay/removal, actor cleanup |
+| Master client | Explicit PUN transfer, server routing to the new master, late-join restoration, lowest remaining actor on master departure |
+| Moderation | Master-only PUN kick notification; the original client handles its own disconnect |
 
-The game can load a local lobby and room. Full gameplay across two RC game
-instances remains a separate manual compatibility check; the SDK harness verifies
-network behavior but does not run Unity gameplay.
+Two actual RC game instances have verified room entry, visible movement, and chat
+through the server. To repeat this check, connect both clients to the same LAN
+endpoint, create a room in one and join it in the other. Press Enter to open chat,
+type a message, and press Enter again to send; verify it in both windows.
+
+Combat, titan synchronization, respawning, round restarts, host departure during
+play, custom maps/scripts, and other RC modes still need manual gameplay coverage.
+Their networking payloads pass through the event relay, but successful protocol
+tests alone do not establish complete game/mod compatibility. Game accounts,
+guilds, and externally hosted skins/assets depend on separate HTTP services that
+this server does not replace. Guest lookup is not account authentication, and
+client-handled kicks/passwords do not provide authoritative access control.
+
+Not implemented: rejoin/actor TTL, persisted rooms, cloud authentication, SQL
+lobbies, legacy cache-merge, TCP/WebSocket transports, and modern Photon protocols.
 
 Protocol references:
 [Photon binary protocol](https://doc.photonengine.com/server/v4/reference/binary-protocol),

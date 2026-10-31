@@ -90,6 +90,14 @@ class BinaryReader:
                         for _ in range(self.unsigned_short())
                     )
                 )
+            case ValueType.INTEGER_ARRAY:
+                count = self.signed_integer(4)
+                if count < 0 or count > self.remaining // 4:
+                    raise ProtocolError("Invalid integer array length")
+                return v.TypedArray(
+                    ValueType.INTEGER,
+                    tuple(v.IntegerValue(self.signed_integer(4)) for _ in range(count)),
+                )
             case ValueType.ARRAY:
                 count = self.unsigned_short()
                 element_type = self.unsigned_byte()

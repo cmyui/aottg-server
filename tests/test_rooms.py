@@ -64,3 +64,17 @@ def test_property_compare_and_swap_is_atomic_and_null_removes_keys() -> None:
     assert room.properties[key] == IntegerValue(2)
     rooms.update_properties(host, 0, {key: NullValue()}, {})
     assert key not in room.properties
+
+
+@pytest.mark.parametrize("capacity", [10, 64, 255])
+def test_full_room_has_unique_members_and_rejects_overflow(capacity: int) -> None:
+    rooms = RoomService(InMemoryRoomRepository())
+    host = Session("0", "0", "rc")
+    room = rooms.create(host, CreateRoom("city", max_players=capacity), {}).room
+    for index in range(1, capacity):
+        rooms.join(Session(str(index), str(index), "rc"), "city", {})
+    assert len(room.players) == capacity
+    assert len({player.actor_id for player in room.players.values()}) == capacity
+    with pytest.raises(RoomError) as failure:
+        rooms.join(Session("overflow", "overflow", "rc"), "city", {})
+    assert failure.value.reason == RoomFailure.FULL
