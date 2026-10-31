@@ -1,0 +1,34 @@
+[project]
+name = "aottg-server"
+version = "0.1.0"
+description = "Self-hosted Python multiplayer server for AoTTG RC"
+requires-python = ">=3.11"
+dependencies = ["cryptography>=44"]
+
+[project.scripts]
+aottg-server = "aottg_server.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = ["mypy>=1.15", "ruff>=0.11", "pytest>=8.3"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["aottg_server", "tests"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = ["aottg_server.ports.connections.Delivery", "aottg_server.domain.models.RoomChanges"]
