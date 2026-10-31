@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+*.log
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.DS_Store
+**/bin/
+**/obj/
+dist/
