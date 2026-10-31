@@ -22,4 +22,19 @@ foreach (var instruction in startup.Body.Instructions.Where(instruction => instr
     instruction.Operand = game.MainModule.ImportReference(bootstrap);
     processor.InsertAfter(instruction, processor.Create(OpCodes.Ret));
 }
+// Add synthetic key presses without replacing game logic or physical input.
+var input = game.MainModule.Types.Single(type => type.FullName == "Settings.KeybindSetting");
+var readInput = game.MainModule.ImportReference(probe.MainModule.Types
+    .Single(type => type.Name == "GameplayProbe").Methods.Single(method => method.Name == "ReadInput"));
+foreach (var method in input.Methods.Where(method => new[] { "GetKeyDown", "GetKey", "GetKeyUp" }.Contains(method.Name)))
+{
+    var il = method.Body.GetILProcessor();
+    var original = method.Body.Instructions[0];
+    il.InsertBefore(original, il.Create(OpCodes.Ldarg_0));
+    il.InsertBefore(original, il.Create(OpCodes.Ldstr, method.Name));
+    il.InsertBefore(original, il.Create(OpCodes.Call, readInput));
+    il.InsertBefore(original, il.Create(OpCodes.Brfalse, original));
+    il.InsertBefore(original, il.Create(OpCodes.Ldc_I4_1));
+    il.InsertBefore(original, il.Create(OpCodes.Ret));
+}
 game.Write(args[1]);

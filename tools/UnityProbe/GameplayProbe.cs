@@ -6,7 +6,7 @@ using System.Reflection;
 using System.Text;
 using UnityEngine;
 
-public sealed class GameplayProbe : UnityEngine.MonoBehaviour
+public sealed partial class GameplayProbe : UnityEngine.MonoBehaviour
 {
     private string directory;
     private float nextPoll;
@@ -68,7 +68,13 @@ public sealed class GameplayProbe : UnityEngine.MonoBehaviour
                 managerType.GetField("needChooseSide").SetValue(manager, false);
                 GameObject checkpoint = GameObject.Find("PVPchkPtH");
                 if (checkpoint != null) managerType.GetField("checkpoint").SetValue(manager, checkpoint);
-                managerType.GetMethod("SpawnPlayer").Invoke(manager, new object[] { request.Length > 2 ? request[2] : "MIKASA", "playerRespawn" });
+                string character = request.Length > 2 ? request[2] : "MIKASA";
+                managerType.GetMethod("SpawnPlayer").Invoke(manager, new object[] { character, "playerRespawn" });
+                // The game's character-selection button publishes this separately.
+                // Eren's original anti-cheat checks it before accepting a shifter.
+                PhotonNetwork.player.SetCustomProperties(new ExitGames.Client.Photon.Hashtable {
+                    { PhotonPlayerProperty.character, character }
+                });
                 break;
             case "chat": manager.GetComponent<PhotonView>().RPC("Chat", PhotonTargets.All, request[2], "probe"); break;
             case "restart": managerType.GetMethod("restartGame2").Invoke(manager, new object[] { false }); break;
@@ -104,7 +110,7 @@ public sealed class GameplayProbe : UnityEngine.MonoBehaviour
                     false, LocalHero().viewID, "probe", false);
                 break;
             case "quit": Application.Quit(); break;
-            default: throw new ArgumentException("Unknown probe command: " + command);
+            default: ExecuteGameplay(command, request); break;
         }
     }
 
@@ -170,6 +176,7 @@ public sealed class GameplayProbe : UnityEngine.MonoBehaviour
                     .Append(position.y).Append(',').Append(position.z).Append(';');
             }
         }
+        GameplaySnapshot(output);
         Field(output, "heroes", heroes.ToString());
         Field(output, "heroPositions", positions.ToString());
         var titans = new StringBuilder();
@@ -202,7 +209,7 @@ public sealed class GameplayProbe : UnityEngine.MonoBehaviour
         foreach (PhotonPlayer player in PhotonNetwork.playerList)
         {
             properties.Append(player.ID).Append(':').Append(player.customProperties.ToStringFull()).Append('\n');
-            foreach (string key in new string[] { "dead", "kills", "deaths", "total_dmg", "RCteam", "currentLevel" })
+            foreach (string key in new string[] { "dead", "kills", "deaths", "total_dmg", "RCteam", "currentLevel", "character" })
                 Field(output, "actor." + player.ID + "." + key, Convert.ToString(player.customProperties[key]));
         }
         Field(output, "properties", properties.ToString());

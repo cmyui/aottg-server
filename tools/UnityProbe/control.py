@@ -8,7 +8,17 @@ from uuid import uuid4
 
 
 def snapshot(directory: Path) -> dict[str, str]:
-    value: object = json.loads((directory / "snapshot.json").read_text())
+    # Unity's legacy runtime deletes the previous snapshot before renaming its
+    # replacement. Retry that brief gap; malformed/absent snapshots still fail.
+    deadline = time.monotonic() + 1
+    while True:
+        try:
+            value: object = json.loads((directory / "snapshot.json").read_text())
+            break
+        except (FileNotFoundError, json.JSONDecodeError):
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.01)
     if not isinstance(value, dict) or not all(
         isinstance(key, str) and isinstance(item, str) for key, item in value.items()
     ):
