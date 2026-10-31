@@ -1,0 +1,1 @@
+"""AoTTG RC multiplayer server."""

@@ -1,0 +1,122 @@
+"""Named constants for the RC client's Photon/PUN Classic wire contract."""
+
+from enum import IntEnum
+
+
+class ValueType(IntEnum):
+    DYNAMIC = 0
+    NULL = 42
+    DICTIONARY = 68
+    BYTE = 98
+    CUSTOM = 99
+    DOUBLE = 100
+    FLOAT = 102
+    TABLE = 104
+    INTEGER = 105
+    SHORT = 107
+    LONG = 108
+    STRING_ARRAY = 110
+    BOOLEAN = 111
+    STRING = 115
+    BYTES = 120
+    ARRAY = 121
+    OBJECT_ARRAY = 122
+
+
+class MessageType(IntEnum):
+    INITIALIZE = 0
+    INITIALIZE_RESPONSE = 1
+    OPERATION = 2
+    RESPONSE = 3
+    EVENT = 4
+    INTERNAL_OPERATION = 6
+    INTERNAL_RESPONSE = 7
+
+
+class CommandType(IntEnum):
+    ACKNOWLEDGE = 1
+    CONNECT = 2
+    VERIFY_CONNECT = 3
+    DISCONNECT = 4
+    PING = 5
+    RELIABLE = 6
+    UNRELIABLE = 7
+    FRAGMENT = 8
+    FETCH_TIMESTAMP = 12
+
+
+class OperationCode(IntEnum):
+    JOIN_RANDOM_ROOM = 225
+    JOIN_ROOM = 226
+    CREATE_ROOM = 227
+    LEAVE_LOBBY = 228
+    JOIN_LOBBY = 229
+    AUTHENTICATE = 230
+    CHANGE_GROUPS = 248
+    GET_PROPERTIES = 251
+    SET_PROPERTIES = 252
+    RAISE_EVENT = 253
+    LEAVE_ROOM = 254
+
+
+class ParameterCode(IntEnum):
+    REMOVE_GROUPS = 239
+    ADD_GROUPS = 238
+    LOBBY_NAME = 213
+    JOIN_MODE = 215
+    AUTH_TYPE = 217
+    APP_VERSION = 220
+    TOKEN = 221
+    ROOM_LIST = 222
+    ADDRESS = 230
+    APPLICATION_ID = 224
+    USER_ID = 225
+    ROOM_PROPERTIES = 248
+    PLAYER_PROPERTIES = 249
+    BROADCAST = 250
+    PROPERTIES = 251
+    ACTOR_LIST = 252
+    TARGET_ACTOR = 253
+    ACTOR_NUMBER = 254
+    ROOM_NAME = 255
+    DATA = 245
+    EVENT_CODE = 244
+    RECEIVER_GROUP = 246
+    CACHE_MODE = 247
+    INTEREST_GROUP = 240
+    EXPECTED_VALUES = 231
+    PEER_COUNT = 229
+    GAME_COUNT = 228
+    MASTER_PEER_COUNT = 227
+
+
+class EventCode(IntEnum):
+    ROOM_LIST = 230
+    ROOM_LIST_UPDATE = 229
+    LOBBY_STATISTICS = 226
+    PROPERTIES_CHANGED = 253
+    LEAVE = 254
+    JOIN = 255
+
+
+class RoomProperty(IntEnum):
+    MAX_PLAYERS = 255
+    IS_VISIBLE = 254
+    IS_OPEN = 253
+    PLAYER_COUNT = 252
+    REMOVED = 251
+    PROPERTIES_IN_LOBBY = 250
+    CLEANUP_CACHE_ON_LEAVE = 249
+    MASTER_CLIENT_ID = 248
+
+
+class ReturnCode(IntEnum):
+    OK = 0
+    INVALID_OPERATION = -2
+    INVALID_PARAMETERS = -3
+    ROOM_ALREADY_EXISTS = 32766
+    ROOM_FULL = 32765
+    ROOM_CLOSED = 32764
+    NO_MATCH_FOUND = 32760
+    ROOM_NOT_FOUND = 32758
+    AUTHENTICATION_FAILED = 32767
