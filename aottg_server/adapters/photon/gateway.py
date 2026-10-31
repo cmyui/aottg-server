@@ -1,5 +1,7 @@
 """Encode outbound messages and deliver them to registered client connections."""
 
+from collections.abc import Iterable
+
 from aottg_server.ports.connections import ClientConnection, Delivery
 
 from .codec import encode_event, encode_response
@@ -24,6 +26,13 @@ class ClientGateway:
     def publish(
         self, connection_id: str, event: EventMessage, delivery: Delivery = Delivery()
     ) -> None:
-        connection = self._connections.get(connection_id)
-        if connection is not None:
-            connection.send(encode_event(event), delivery)
+        self.publish_many((connection_id,), event, delivery)
+
+    def publish_many(
+        self, connection_ids: Iterable[str], event: EventMessage, delivery: Delivery = Delivery()
+    ) -> None:
+        payload = encode_event(event)
+        for connection_id in connection_ids:
+            connection = self._connections.get(connection_id)
+            if connection is not None:
+                connection.send(payload, delivery)

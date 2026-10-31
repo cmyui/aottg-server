@@ -27,6 +27,12 @@ class ReceiverGroup(IntEnum):
     MASTER = 2
 
 
+class MatchmakingMode(IntEnum):
+    FILL_OLDEST = 0
+    SERIAL = 1
+    RANDOM = 2
+
+
 class CachePolicy(IntEnum):
     NONE = 0
     MERGE = 1
@@ -81,6 +87,7 @@ class Room:
     properties: Properties
     players: dict[int, Player] = field(default_factory=dict)
     cached_events: list[CachedEvent] = field(default_factory=list)
+    lobby_property_names: tuple[str, ...] = ()
     next_actor_id: int = 1
     master_actor_id: int = 0
 
@@ -89,11 +96,12 @@ class Room:
 class CreateRoom:
     name: str
     lobby_name: str = ""
-    max_players: int = 10
+    max_players: int = 0
     is_open: bool = True
     is_visible: bool = True
     cleanup_cache_on_leave: bool = True
     properties: Properties = field(default_factory=dict)
+    lobby_property_names: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -127,3 +135,5 @@ class RoomChanges:
     is_open: bool | None = None
     is_visible: bool | None = None
     master_actor_id: int | None = None
+    cleanup_cache_on_leave: bool | None = None
+    lobby_property_names: tuple[str, ...] | None = None

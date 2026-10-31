@@ -128,3 +128,31 @@ def test_cache_limit_does_not_append_rejected_event(
     with pytest.raises(RoomError):
         events.raise_event(room, host, request)
     assert len(room.cached_events) == 1
+
+
+def test_targeted_and_group_events_are_delivered_without_caching(
+    game: tuple[RoomService, EventService, Room, Session, Session],
+) -> None:
+    _, events, room, host, guest = game
+    assert events.raise_event(
+        room,
+        host,
+        RaiseEvent(
+            200,
+            NullValue(),
+            cache_policy=CachePolicy.ADD,
+            target_actors=(guest.actor_id or 0,),
+        ),
+    ) == ("guest",)
+    assert not room.cached_events
+    assert events.raise_event(
+        room,
+        guest,
+        RaiseEvent(
+            200,
+            NullValue(),
+            cache_policy=CachePolicy.ADD,
+            receivers=ReceiverGroup.MASTER,
+        ),
+    ) == ("host",)
+    assert not room.cached_events

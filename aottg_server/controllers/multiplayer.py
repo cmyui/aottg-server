@@ -18,6 +18,7 @@ from aottg_server.domain import values as v
 from aottg_server.domain.models import (
     CachePolicy,
     JoinResult,
+    MatchmakingMode,
     RaiseEvent,
     ReceiverGroup,
     Room,
@@ -29,9 +30,11 @@ from aottg_server.domain.models import (
 from aottg_server.ports.connections import ClientConnection, Delivery, ServerRole
 from aottg_server.ports.repositories import SessionRepository
 from aottg_server.services.events import EventService
+from aottg_server.services.matchmaking import MatchmakingService
 from aottg_server.services.rooms import RoomService
 
 from .parameters import RequestParameters
+from .pun_events import PunEventController
 from .room_properties import (
     actor_properties,
     create_request,
@@ -61,12 +64,16 @@ class MultiplayerController:
         sessions: SessionRepository,
         gateway: ClientGateway,
         game_address: str,
+        matchmaking: MatchmakingService,
+        pun_events: PunEventController,
     ) -> None:
         self._rooms = rooms
         self._events = events
         self._sessions = sessions
         self._gateway = gateway
         self._game_address = game_address
+        self._matchmaking = matchmaking
+        self._pun_events = pun_events
 
     def handle(
         self, connection: ClientConnection, request: OperationRequest, delivery: Delivery
@@ -135,6 +142,12 @@ class MultiplayerController:
             self._lobby(session, request)
         elif code in (OperationCode.CREATE_ROOM, OperationCode.JOIN_ROOM):
             self._join_room(connection, session, request)
+        elif code == OperationCode.JOIN_RANDOM_ROOM:
+            if connection.role != ServerRole.MASTER:
+                raise RoomError(RoomFailure.INVALID_REQUEST, "Matchmaking requires master server")
+            self._join_random(session, request)
+        elif code == OperationCode.FIND_FRIENDS:
+            self._find_friends(session, request)
         elif code == OperationCode.RAISE_EVENT:
             self._raise_event(session, request, delivery)
         elif code == OperationCode.SET_PROPERTIES:
@@ -164,7 +177,60 @@ class MultiplayerController:
                 "Operation is not supported by this server",
             )
 
+    def _join_random(self, session: Session, request: OperationRequest) -> None:
+        parameters = RequestParameters(request.parameters)
+        self._require_default_lobby_type(parameters)
+        expected = parameters.properties(P.ROOM_PROPERTIES)
+        capacity = create_request("", "", expected).max_players
+        room = self._matchmaking.find_room(
+            session,
+            parameters.text(P.LOBBY_NAME),
+            custom_properties(expected),
+            capacity,
+            MatchmakingMode(parameters.integer(P.MATCHMAKING_MODE)),
+        )
+        if room is None:
+            self._respond(
+                session.connection_id,
+                request.code,
+                ReturnCode.NO_MATCH_FOUND,
+                "No matching open room",
+            )
+            return
+        self._gateway.respond(
+            session.connection_id,
+            OperationResponse(
+                request.code,
+                {
+                    P.ADDRESS: v.StringValue(self._game_address),
+                    P.ROOM_NAME: v.StringValue(room.key.name),
+                },
+            ),
+        )
+
+    def _find_friends(self, session: Session, request: OperationRequest) -> None:
+        names = RequestParameters(request.parameters).strings(1)
+        statuses = self._matchmaking.find_friends(session, names)
+        self._gateway.respond(
+            session.connection_id,
+            OperationResponse(
+                request.code,
+                {
+                    1: v.TypedArray(
+                        ValueType.BOOLEAN, tuple(v.BooleanValue(online) for online, _ in statuses)
+                    ),
+                    2: v.StringArray(tuple(v.StringValue(room) for _, room in statuses)),
+                },
+            ),
+        )
+
+    @staticmethod
+    def _require_default_lobby_type(parameters: RequestParameters) -> None:
+        if parameters.integer(P.LOBBY_TYPE) != 0:
+            raise RoomError(RoomFailure.INVALID_REQUEST, "Only default-type lobbies are supported")
+
     def _lobby(self, session: Session, request: OperationRequest) -> None:
+        self._require_default_lobby_type(RequestParameters(request.parameters))
         session.lobby_name = (
             RequestParameters(request.parameters).text(P.LOBBY_NAME)
             if request.code == OperationCode.JOIN_LOBBY
@@ -173,7 +239,7 @@ class MultiplayerController:
         self._respond(session.connection_id, request.code)
         if session.lobby_name is not None:
             rooms: v.Properties = {
-                v.StringValue(room.key.name): room_properties(room)
+                v.StringValue(room.key.name): room_properties(room, lobby=True)
                 for room in self._rooms.rooms.list_all()
                 if room.key.namespace == session.namespace
                 and room.is_visible
@@ -192,6 +258,7 @@ class MultiplayerController:
         self, connection: ClientConnection, session: Session, request: OperationRequest
     ) -> None:
         parameters = RequestParameters(request.parameters)
+        self._require_default_lobby_type(parameters)
         name = parameters.text(P.ROOM_NAME)
         creating = request.code == OperationCode.CREATE_ROOM
         if creating and not name:
@@ -199,15 +266,17 @@ class MultiplayerController:
         creation = create_request(
             name, parameters.text(P.LOBBY_NAME), parameters.properties(P.ROOM_PROPERTIES)
         )
-        if parameters.integer(P.JOIN_MODE) != 0:
-            raise RoomError(
-                RoomFailure.INVALID_REQUEST, "Rejoin and join-or-create are unsupported"
-            )
+        join_or_create = parameters.join_or_create(P.JOIN_MODE)
         if connection.role == ServerRole.MASTER:
             if creating:
                 self._rooms.validate_creation(session, creation)
             else:
-                self._rooms.find_joinable(session, name)
+                try:
+                    self._rooms.find_joinable(session, name)
+                except RoomError as exc:
+                    if not join_or_create or exc.reason != RoomFailure.NOT_FOUND:
+                        raise
+                    self._rooms.validate_creation(session, creation)
             self._gateway.respond(
                 session.connection_id,
                 OperationResponse(
@@ -220,11 +289,12 @@ class MultiplayerController:
             )
             return
         player_properties = parameters.properties(P.PLAYER_PROPERTIES)
-        result = (
-            self._rooms.create(session, creation, player_properties)
-            if creating
-            else self._rooms.join(session, name, player_properties)
-        )
+        if creating:
+            result = self._rooms.create(session, creation, player_properties)
+        elif join_or_create:
+            result = self._rooms.join_or_create(session, creation, player_properties)
+        else:
+            result = self._rooms.join(session, name, player_properties)
         self._publish_join(session, request.code, result)
         logger.info("Actor %s joined room %r", result.player.actor_id, name)
 
@@ -251,8 +321,13 @@ class MultiplayerController:
                 P.PLAYER_PROPERTIES: v.PropertyTable(dict(player.properties)),
             },
         )
-        for member in tuple(room.players.values()):
-            self._gateway.publish(member.connection_id, joined)
+        self._gateway.publish_many(
+            tuple(member.connection_id for member in room.players.values()), joined
+        )
+        if room.master_actor_id != min(room.players):
+            self._gateway.publish(
+                session.connection_id, self._pun_events.master_snapshot(room.master_actor_id)
+            )
         for cached in result.cached_events:
             self._gateway.publish(
                 session.connection_id,
@@ -281,6 +356,7 @@ class MultiplayerController:
         if not 0 <= event.code <= 255 or not 0 <= event.interest_group <= 255:
             raise RoomError(RoomFailure.INVALID_REQUEST, "Invalid event code or interest group")
         room = self._rooms.require_room(session)
+        self._pun_events.before_relay(session, event)
         recipients = self._events.raise_event(room, session, event)
         message = EventMessage(
             event.code,
@@ -289,8 +365,7 @@ class MultiplayerController:
                 P.DATA: event.payload,
             },
         )
-        for connection_id in recipients:
-            self._gateway.publish(connection_id, message, delivery)
+        self._gateway.publish_many(recipients, message, delivery)
 
     def _set_properties(self, session: Session, request: OperationRequest) -> None:
         parameters = RequestParameters(request.parameters)
@@ -298,11 +373,18 @@ class MultiplayerController:
         properties = parameters.properties(P.PROPERTIES)
         changes = room_changes(properties) if target_actor == 0 else RoomChanges()
         updates = custom_properties(properties) if target_actor == 0 else properties
+        expected = parameters.properties(P.EXPECTED_VALUES)
+        expected_changes = room_changes(expected) if target_actor == 0 else RoomChanges()
         room = self._rooms.update_properties(
-            session, target_actor, updates, parameters.properties(P.EXPECTED_VALUES), changes
+            session,
+            target_actor,
+            updates,
+            custom_properties(expected) if target_actor == 0 else expected,
+            changes,
+            expected_changes,
         )
         self._respond(session.connection_id, request.code)
-        if parameters.flag(P.BROADCAST, True):
+        if parameters.flag(P.BROADCAST):
             event = EventMessage(
                 EventCode.PROPERTIES_CHANGED,
                 {
@@ -311,8 +393,9 @@ class MultiplayerController:
                     P.ACTOR_NUMBER: v.IntegerValue(session.actor_id or 0),
                 },
             )
-            for player in tuple(room.players.values()):
-                self._gateway.publish(player.connection_id, event)
+            self._gateway.publish_many(
+                tuple(player.connection_id for player in room.players.values()), event
+            )
         self._publish_room_change(room)
 
     def _change_groups(self, session: Session, request: OperationRequest) -> None:
@@ -347,8 +430,9 @@ class MultiplayerController:
                 ),
             },
         )
-        for player in tuple(result.room.players.values()):
-            self._gateway.publish(player.connection_id, event)
+        self._gateway.publish_many(
+            tuple(player.connection_id for player in result.room.players.values()), event
+        )
         self._publish_room_change(result.room, removed=result.room_removed)
 
     def _publish_room_change(self, room: Room, *, removed: bool = False) -> None:
@@ -358,7 +442,7 @@ class MultiplayerController:
                 P.ROOM_LIST: v.PropertyTable(
                     {
                         v.StringValue(room.key.name): room_properties(
-                            room, removed=removed or not room.is_visible
+                            room, removed=removed or not room.is_visible, lobby=True
                         ),
                     }
                 )

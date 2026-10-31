@@ -46,6 +46,7 @@ class RoomService:
             request.is_visible,
             request.cleanup_cache_on_leave,
             dict(request.properties),
+            lobby_property_names=request.lobby_property_names,
         )
         self.rooms.add(room)
         return self._add_player(room, session, player_properties)
@@ -56,9 +57,31 @@ class RoomService:
             raise RoomError(RoomFailure.NOT_FOUND, "Room does not exist")
         if not room.is_open:
             raise RoomError(RoomFailure.CLOSED, "Room is closed")
-        if room.max_players and len(room.players) >= room.max_players:
+        if len(room.players) >= (room.max_players or 255):
             raise RoomError(RoomFailure.FULL, "Room is full")
         return room
+
+    def transfer_master(self, session: Session, actor_id: int) -> Room:
+        room = self.require_room(session)
+        self.require_master(room, session)
+        if actor_id not in room.players:
+            raise RoomError(RoomFailure.INVALID_REQUEST, "Unknown master client")
+        room.master_actor_id = actor_id
+        return room
+
+    @staticmethod
+    def require_master(room: Room, session: Session) -> None:
+        if session.actor_id != room.master_actor_id:
+            raise RoomError(
+                RoomFailure.INVALID_REQUEST, "Only the master client can perform this action"
+            )
+
+    def join_or_create(
+        self, session: Session, request: CreateRoom, player_properties: Properties
+    ) -> JoinResult:
+        if self.rooms.get(RoomKey(session.namespace, request.name)) is None:
+            return self.create(session, request, player_properties)
+        return self.join(session, request.name, player_properties)
 
     def join(self, session: Session, name: str, player_properties: Properties) -> JoinResult:
         self._require_not_joined(session)
@@ -106,6 +129,7 @@ class RoomService:
         updates: Properties,
         expected: Properties,
         changes: RoomChanges = RoomChanges(),
+        expected_changes: RoomChanges = RoomChanges(),
     ) -> Room:
         room = self.require_room(session)
         if target_actor:
@@ -115,8 +139,23 @@ class RoomService:
             destination = player.properties
         else:
             destination = room.properties
-        if any(destination.get(key) != value for key, value in expected.items()):
+        metadata_matches = all(
+            wanted is None or actual == wanted
+            for actual, wanted in (
+                (room.max_players, expected_changes.max_players),
+                (room.is_open, expected_changes.is_open),
+                (room.is_visible, expected_changes.is_visible),
+                (room.master_actor_id, expected_changes.master_actor_id),
+                (room.cleanup_cache_on_leave, expected_changes.cleanup_cache_on_leave),
+                (room.lobby_property_names, expected_changes.lobby_property_names),
+            )
+        )
+        if not metadata_matches or any(
+            destination.get(key, NullValue()) != value for key, value in expected.items()
+        ):
             raise RoomError(RoomFailure.PROPERTY_CONFLICT, "Properties changed concurrently")
+        if changes.master_actor_id is not None:
+            self.require_master(room, session)
         if changes.master_actor_id is not None and changes.master_actor_id not in room.players:
             raise RoomError(RoomFailure.INVALID_REQUEST, "Unknown master client")
         for key, value in updates.items():
@@ -132,6 +171,10 @@ class RoomService:
             room.is_visible = changes.is_visible
         if changes.master_actor_id is not None:
             room.master_actor_id = changes.master_actor_id
+        if changes.cleanup_cache_on_leave is not None:
+            room.cleanup_cache_on_leave = changes.cleanup_cache_on_leave
+        if changes.lobby_property_names is not None:
+            room.lobby_property_names = changes.lobby_property_names
         return room
 
     @staticmethod

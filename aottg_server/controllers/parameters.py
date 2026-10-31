@@ -40,6 +40,28 @@ class RequestParameters:
             return dict(value.entries)
         raise ProtocolError(f"Parameter {key} must be a property table")
 
+    def strings(self, key: int) -> tuple[str, ...]:
+        value = self.values.get(key)
+        if value is None or isinstance(value, v.NullValue):
+            return ()
+        if not isinstance(value, (v.StringArray, v.TypedArray, v.ObjectArray)):
+            raise ProtocolError(f"Parameter {key} must be a string array")
+        items: list[str] = []
+        for item in value.items:
+            if not isinstance(item, v.StringValue):
+                raise ProtocolError(f"Parameter {key} must contain strings")
+            items.append(item.value)
+        return tuple(items)
+
+    def join_or_create(self, key: int) -> bool:
+        value = self.values.get(key)
+        if isinstance(value, v.BooleanValue):
+            return value.value
+        mode = self.integer(key)
+        if mode not in (0, 1):
+            raise ProtocolError("Only join and join-or-create are supported by this RC server")
+        return mode == 1
+
     def actor_ids(self, key: int) -> tuple[int, ...] | None:
         value = self.values.get(key)
         if value is None:

@@ -50,8 +50,12 @@ class EventService:
     def _cache(self, room: Room, actor_id: int, request: RaiseEvent) -> None:
         if request.cache_policy == CachePolicy.NONE:
             return
-        if request.target_actors is not None or request.interest_group:
-            raise RoomError(RoomFailure.INVALID_REQUEST, "Cannot cache targeted/group events")
+        if (
+            request.target_actors is not None
+            or request.interest_group
+            or request.receivers == ReceiverGroup.MASTER
+        ):
+            return  # Photon delivers these live, but does not put them in the cache.
         if request.cache_policy == CachePolicy.MERGE:
             raise RoomError(RoomFailure.INVALID_REQUEST, "Legacy cache merge is unsupported")
         if request.cache_policy == CachePolicy.REPLACE:

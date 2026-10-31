@@ -67,3 +67,12 @@ def test_rejects_excessive_nesting() -> None:
     payload = b"z\x00\x01" * 40 + b"*"
     with pytest.raises(ProtocolError):
         BinaryReader(payload).read_value()
+
+
+def test_legacy_array_wire_tags_match_the_shipped_sdk() -> None:
+    assert encode_value(v.StringArray((v.StringValue("RC"),))) == bytes.fromhex("61000100025243")
+    reader = BinaryReader(bytes.fromhex("6e0000000200000001ffffffff"))
+    assert reader.read_value() == v.TypedArray(
+        ValueType.INTEGER, (v.IntegerValue(1), v.IntegerValue(-1))
+    )
+    assert reader.remaining == 0

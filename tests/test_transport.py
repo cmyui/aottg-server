@@ -26,6 +26,11 @@ class RecordingEndpoint(UdpEndpoint):
         super().__init__(handler, ServerRole.GAME)
         self.sent: list[Datagram] = []
 
+    def send_command(self, connection: UdpConnection, command: Command) -> None:
+        self.send_datagram(
+            Datagram(connection.peer_id, 0, connection.challenge, (command,)), connection.address
+        )
+
     def send_datagram(self, datagram: Datagram, address: NetworkAddress) -> None:
         self.sent.append(datagram)
 
@@ -121,3 +126,91 @@ def test_overlapping_fragments_are_rejected() -> None:
     assert assembly.add(0, 0, b"abcd") is None
     with pytest.raises(ProtocolError):
         assembly.add(1, 2, b"ef")
+
+
+def test_large_replay_uses_bounded_send_window_and_drains_in_order(
+    peer: tuple[UdpConnection, RecordingEndpoint, RecordingHandler],
+) -> None:
+    from aottg_server.adapters.photon.udp import MAX_IN_FLIGHT_COMMANDS
+
+    connection, endpoint, _ = peer
+    for index in range(3000):
+        connection.send(index.to_bytes(4, "big"))
+    assert not connection.closed
+    assert len(endpoint.sent) == MAX_IN_FLIGHT_COMMANDS
+    acknowledged = 0
+    while connection.pending_acknowledgments:
+        command = endpoint.sent[acknowledged].commands[0]
+        connection.receive(
+            Command(
+                CommandType.ACKNOWLEDGE,
+                command.channel,
+                False,
+                0,
+                struct.pack(">II", command.sequence, 0),
+            ),
+            0,
+        )
+        acknowledged += 1
+        assert len(connection.pending_acknowledgments) <= MAX_IN_FLIGHT_COMMANDS
+    assert acknowledged == 3000
+    assert not connection.outbound_queue
+    assert connection.outbound_bytes == 0
+    assert [packet.commands[0].payload for packet in endpoint.sent] == [
+        index.to_bytes(4, "big") for index in range(3000)
+    ]
+
+
+def test_reliable_sequence_wrap_preserves_order(
+    peer: tuple[UdpConnection, RecordingEndpoint, RecordingHandler],
+) -> None:
+    connection, _, handler = peer
+    connection.incoming_sequences[0] = 0xFFFFFFFE
+    connection.receive(Command(CommandType.RELIABLE, 0, True, 0, b"wrapped"), 0)
+    connection.receive(Command(CommandType.RELIABLE, 0, True, 0xFFFFFFFF, b"last"), 0)
+    connection.receive(Command(CommandType.RELIABLE, 0, True, 0xFFFFFFFF, b"duplicate"), 0)
+    assert [payload for payload, _ in handler.messages] == [b"last", b"wrapped"]
+
+
+def test_slow_consumer_is_disconnected_at_queue_byte_limit(
+    peer: tuple[UdpConnection, RecordingEndpoint, RecordingHandler],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from aottg_server.adapters.photon import udp
+
+    monkeypatch.setattr(udp, "MAX_OUTBOUND_BYTES", 100)
+    connection, _, handler = peer
+    for _ in range(udp.MAX_IN_FLIGHT_COMMANDS + 10):
+        connection.send(b"x" * 50)
+    assert connection.closed
+    assert not connection.outbound_queue
+    assert not connection.pending_acknowledgments
+    assert handler.departures == [connection.connection_id]
+
+
+def test_packet_batching_preserves_commands_and_respects_mtu() -> None:
+    import asyncio
+
+    class Endpoint(UdpEndpoint):
+        def __init__(self) -> None:
+            super().__init__(RecordingHandler(), ServerRole.GAME)
+            self.packets: list[Datagram] = []
+
+        def send_datagram(self, datagram: Datagram, address: NetworkAddress) -> None:
+            self.packets.append(datagram)
+
+    async def exercise() -> None:
+        endpoint = Endpoint()
+        connection = UdpConnection(endpoint, ("127.0.0.1", 9999), 1, 1234, 576)
+        commands = [
+            Command(CommandType.UNRELIABLE, 0, False, 0, bytes([index]) * 100)
+            for index in range(100)
+        ]
+        for command in commands:
+            endpoint.send_command(connection, command)
+        await asyncio.sleep(0.01)
+        assert [command for packet in endpoint.packets for command in packet.commands] == commands
+        assert len(endpoint.packets) < len(commands)
+        assert all(len(packet.encode()) <= connection.mtu for packet in endpoint.packets)
+
+    asyncio.run(exercise())
