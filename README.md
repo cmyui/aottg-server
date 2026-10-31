@@ -158,19 +158,31 @@ python3 tools/UnityProbe/prepare.py /Applications/AottgRC.app /tmp/aottg-gamepla
 python3 tools/UnityProbe/run.py /tmp/aottg-gameplay-check
 ```
 
-Preparation copies the app three times and adds one startup call to a small test
-component in each copy. The installed app is read-only. The component activates
-only with `AOTTG_PROBE_DIRECTORY`, accepts local file commands, and calls the game's
-existing methods. It does not replace networking, damage handling, map parsing,
-or script execution. Private game types are accessed through reflection in this
-test adapter; no game source, assets, or compiled assemblies are committed.
+Preparation copies the app three times and adds a startup call and synthetic
+key-input hooks to a small test component in each copy. The installed app is
+read-only. The component activates only with `AOTTG_PROBE_DIRECTORY`, accepts
+local file commands, and calls the game's existing methods. It does not replace
+networking, damage handling, boss AI, map parsing, or script execution. Private
+game types are accessed through reflection in this test adapter; no game source,
+assets, or compiled assemblies are committed. Avoid interacting with the test
+windows while a run is in progress.
 
 The runner checks each client's observed world, scores, settings, and room state.
 It writes `report.json`, per-client Unity logs, and command/snapshot files in the
 test directory, then stops its own clients. `manifest.json` records the original
-assembly hashes and probe source hash. A failed condition exits nonzero and retains
-the evidence. Use `--scenario city`, `--scenario custom`, or `--scenario modes`
-to run an individual group; `--port` selects the test server's master port.
+assembly hashes and the compiled probe's source hashes. A failed condition exits
+nonzero and retains the evidence. Select an individual group with `--scenario`
+(`city`, `custom`, `modes`, `bosses`, `skills`, `weapons`, or `capture`); `--port` selects the
+test server's master port. The complete run includes a real-time Trost escort,
+so allow several minutes. To repeat one boss mission:
+
+```sh
+python3 tools/UnityProbe/run.py /tmp/aottg-gameplay-check --scenario bosses --mission Trost
+```
+
+`missions.py` owns objective scenarios; `combat.py` owns weapons and abilities.
+`GameplayActions.cs` contains test input, fixture placement, and observations;
+`GameplayProbe.cs` handles the local command/snapshot interface.
 CI cannot run these checks because they require the user's game installation.
 
 ## Compatibility scope
@@ -203,13 +215,23 @@ The Unity harness targets RC Mod **12/23/2024** and exercises these gameplay pat
 | Survival | Clearing a wave advances the wave number, creates the next wave, and respawns a fallen player |
 | Racing | Countdown, guest finish submission, shared results, restart |
 | AHSS PvP | Character spawns, player-kill RPC, victim destruction and death state, restart |
-| Annie, Colossal, Trost, capture | Scene loading and mission objects where applicable, replication and restart |
+| Annie | Boss death, fifteen summoned reinforcements, corpse/cache removal, clearing the remaining titans, shared victory and restart |
+| Colossal Titan | Emergence, lethal damage, the original death/steam sequence, shared victory and restart |
+| Trost | All timed escort stages and the full route, rock placement and gate closure, shared victory, restart, escort-death defeat |
+| Character skills | Mikasa, Levi, Petra, Armin's titan stun, Marco's host-applied taunt, Sasha's speed buff/expiry, Jean's grab escape, Eren's transformation/attacks/roar/expiry and map restriction |
+| Weapons | Blade attacks/replacement, AHSS left/right/both shots and reloads, ground/wall cannon control/fire/dismount, thunder-spear explosion and player kill; blade/gun/cannon collisions against host-owned titans |
+| Capture | Sequential checkpoint captures, synchronized ownership, all-checkpoint victory and restart |
 
-The probe positions characters and invokes game methods rather than performing
-keyboard/mouse combat. These checks cover gameplay execution and synchronization;
-they do not prove every weapon/skill, complete boss/escort missions, every RC script,
-or compatibility with other client builds. The networking performance target is
-64 players; the Unity gameplay suite uses three clients.
+Skills and weapon firing use synthetic key presses through the original input
+handlers. Fixtures position characters, supply AHSS attack momentum, arrange real
+weapon/titan collider overlaps, place a thunder spear near its target, and skip
+initial skill cooldowns.
+Boss defenders use the existing range-checked damage RPC; the mission code itself
+must produce victory or defeat. These are gameplay/synchronization checks, not a
+human aiming or movement benchmark. They cover each built-in character skill and
+weapon class, but not every combat combination, difficulty, RC script, or client
+build. The networking target remains 64 players; the Unity gameplay suite uses
+three clients.
 
 Game accounts, guilds, and externally hosted skins/assets depend on separate HTTP
 services that this server does not replace. Guest lookup is not account

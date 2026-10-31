@@ -35,7 +35,10 @@ def main() -> None:
             name: hashlib.sha256((managed / name).read_bytes()).hexdigest()
             for name in ("Assembly-CSharp.dll", "Photon3Unity3D.dll", "UnityEngine.dll")
         },
-        "probe_source_sha256": hashlib.sha256((tool / "GameplayProbe.cs").read_bytes()).hexdigest(),
+        "probe_sources": {
+            source.name: hashlib.sha256(source.read_bytes()).hexdigest()
+            for source in sorted(tool.glob("*.cs"))
+        },
         "dotnet_sdk": version,
     }
     (output / "manifest.json").write_text(json.dumps(manifest, indent=2))
@@ -59,7 +62,7 @@ def main() -> None:
             "/langversion:7.3",
             f"/out:{probe}",
             *[f"/r:{managed / (name + '.dll')}" for name in references],
-            str(tool / "GameplayProbe.cs"),
+            *[str(source) for source in sorted(tool.glob("*.cs"))],
         ],
         check=True,
     )

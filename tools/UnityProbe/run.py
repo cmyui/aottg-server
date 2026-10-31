@@ -471,15 +471,26 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("root", type=Path, help="Directory produced by prepare.py")
     parser.add_argument("--port", type=int, default=5075)
-    parser.add_argument("--scenario", choices=("all", "city", "custom", "modes"), default="all")
+    parser.add_argument(
+        "--scenario",
+        choices=("all", "city", "custom", "modes", "bosses", "skills", "weapons", "capture"),
+        default="all",
+    )
+    parser.add_argument(
+        "--mission",
+        choices=("Annie", "Colossal Titan", "Trost"),
+        help="Run one boss mission (with --scenario bosses)",
+    )
     args = parser.parse_args()
+    if args.mission is not None and args.scenario != "bosses":
+        parser.error("--mission requires --scenario bosses")
     root: Path = args.root.resolve()
     processes: list[subprocess.Popen[bytes]] = []
     run = GameplayRun(root, args.port)
     try:
         for name in PLAYERS:
-            state = root / name / "snapshot.json"
-            state.unlink(missing_ok=True)
+            for filename in ("snapshot.json", "snapshot-error.txt", "command.txt", "result.txt"):
+                (root / name / filename).unlink(missing_ok=True)
             process = subprocess.Popen(
                 [
                     str(root / f"{name}.app/Contents/MacOS/AottgRC"),
@@ -514,6 +525,30 @@ def main() -> None:
             run.leave_room()
         if args.scenario in ("all", "modes"):
             run.modes()
+        if args.scenario in ("all", "bosses"):
+            from missions import bosses
+
+            if args.scenario == "all":
+                run.leave_room()
+            bosses(run, args.mission)
+        if args.scenario in ("all", "skills"):
+            from combat import skills
+
+            if args.scenario == "all":
+                run.leave_room()
+            skills(run)
+        if args.scenario in ("all", "weapons"):
+            from combat import weapons
+
+            if args.scenario == "all":
+                run.leave_room()
+            weapons(run)
+        if args.scenario in ("all", "capture"):
+            from missions import capture
+
+            if args.scenario == "all":
+                run.leave_room()
+            capture(run)
         run.verify_logs()
         print(
             f"PASS: {len(run.observations)} gameplay checks; report: {root / 'report.json'}",
