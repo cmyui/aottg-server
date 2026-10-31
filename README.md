@@ -98,7 +98,7 @@ uv run mypy
 uv run pytest -q
 ```
 
-Mypy runs in strict mode over the application and tests. CI runs these checks on
+Mypy runs in strict mode over the application, tests, and Python gameplay harness. CI runs these checks on
 macOS and Linux with Python 3.11 and 3.13. Tests cover wire types, malformed input,
 room isolation/capacity, property compare-and-swap, event routing/cache cleanup,
 ordered delivery, duplicates, retransmission, and fragment reconstruction.
@@ -141,6 +141,38 @@ delivered only 83.29% of movement updates and failed the performance check.
 Both harness and server ran on the same machine alongside two Unity clients;
 these results are local compatibility measurements, not hosting capacity guarantees.
 
+### Actual Unity gameplay checks
+
+`tools/UnityProbe` runs three actual RC clients on macOS. It requires the installed
+RC app, .NET SDK, Python, and a graphical desktop session. Start a separate server
+so testing does not interrupt an existing room:
+
+```sh
+uv run aottg-server --port 5075
+```
+
+In another terminal, prepare a **new** directory outside the installed app and run:
+
+```sh
+python3 tools/UnityProbe/prepare.py /Applications/AottgRC.app /tmp/aottg-gameplay-check
+python3 tools/UnityProbe/run.py /tmp/aottg-gameplay-check
+```
+
+Preparation copies the app three times and adds one startup call to a small test
+component in each copy. The installed app is read-only. The component activates
+only with `AOTTG_PROBE_DIRECTORY`, accepts local file commands, and calls the game's
+existing methods. It does not replace networking, damage handling, map parsing,
+or script execution. Private game types are accessed through reflection in this
+test adapter; no game source, assets, or compiled assemblies are committed.
+
+The runner checks each client's observed world, scores, settings, and room state.
+It writes `report.json`, per-client Unity logs, and command/snapshot files in the
+test directory, then stops its own clients. `manifest.json` records the original
+assembly hashes and probe source hash. A failed condition exits nonzero and retains
+the evidence. Use `--scenario city`, `--scenario custom`, or `--scenario modes`
+to run an individual group; `--port` selects the test server's master port.
+CI cannot run these checks because they require the user's game installation.
+
 ## Compatibility scope
 
 The target is the RC client using Photon UDP and GpBinaryV16.
@@ -161,13 +193,30 @@ through the server. To repeat this check, connect both clients to the same LAN
 endpoint, create a room in one and join it in the other. Press Enter to open chat,
 type a message, and press Enter again to send; verify it in both windows.
 
-Combat, titan synchronization, respawning, round restarts, host departure during
-play, custom maps/scripts, and other RC modes still need manual gameplay coverage.
-Their networking payloads pass through the event relay, but successful protocol
-tests alone do not establish complete game/mod compatibility. Game accounts,
-guilds, and externally hosted skins/assets depend on separate HTTP services that
-this server does not replace. Guest lookup is not account authentication, and
-client-handled kicks/passwords do not provide authoritative access control.
+The Unity harness targets RC Mod **12/23/2024** and exercises these gameplay paths:
+
+| Gameplay path | What the harness verifies |
+| --- | --- |
+| City combat | Player/titan prefabs, costume properties, movement, guest damage to a host-owned titan, death, kill/damage scores, targeted respawn |
+| Room lifecycle | Late-join buffered death and current scores, pause/unpause, victory/defeat, restart, explicit host transfer, host departure and round reconstruction |
+| RC custom content | A 121-object multi-chunk map creates matching geometry/hashes; settings propagate; cached map reloads; round-start and titan-death scripts execute and broadcast results |
+| Survival | Clearing a wave advances the wave number, creates the next wave, and respawns a fallen player |
+| Racing | Countdown, guest finish submission, shared results, restart |
+| AHSS PvP | Character spawns, player-kill RPC, victim destruction and death state, restart |
+| Annie, Colossal, Trost, capture | Scene loading and mission objects where applicable, replication and restart |
+
+The probe positions characters and invokes game methods rather than performing
+keyboard/mouse combat. These checks cover gameplay execution and synchronization;
+they do not prove every weapon/skill, complete boss/escort missions, every RC script,
+or compatibility with other client builds. The networking performance target is
+64 players; the Unity gameplay suite uses three clients.
+
+Game accounts, guilds, and externally hosted skins/assets depend on separate HTTP
+services that this server does not replace. Guest lookup is not account
+authentication, and client-handled kicks/passwords do not provide authoritative
+access control. RC's LAN admin authentication and IP-ban/unban backend are not
+implemented. Admin-auth/unban events are explicitly rejected and never relayed or
+cached, so an admin password cannot be forwarded to other room members.
 
 Not implemented: rejoin/actor TTL, persisted rooms, cloud authentication, SQL
 lobbies, legacy cache-merge, TCP/WebSocket transports, and modern Photon protocols.

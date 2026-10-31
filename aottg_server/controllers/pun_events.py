@@ -1,4 +1,4 @@
-"""PUN Classic control events that affect server-side recipient selection."""
+"""PUN master-client controls and RC events reserved for the LAN server."""
 
 from aottg_server.adapters.photon.codes import EventCode, ParameterCode
 from aottg_server.adapters.photon.messages import EventMessage, ProtocolError
@@ -12,6 +12,10 @@ class PunEventController:
         self._rooms = rooms
 
     def before_relay(self, session: Session, request: RaiseEvent) -> None:
+        if request.code in (EventCode.SERVER_AUTHENTICATE, EventCode.SERVER_UNBAN):
+            # RC sends these to the LAN server, not to other players. In
+            # particular, authentication contains a password and must never relay.
+            raise ProtocolError("LAN server administration is not supported")
         if request.code not in (EventCode.TRANSFER_MASTER, EventCode.CLOSE_CONNECTION):
             return
         room = self._rooms.require_room(session)

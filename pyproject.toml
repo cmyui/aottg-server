@@ -18,7 +18,7 @@ dev = ["mypy>=1.15", "ruff>=0.11", "pytest>=8.3"]
 [tool.mypy]
 python_version = "3.11"
 strict = true
-files = ["aottg_server", "tests"]
+files = ["aottg_server", "tests", "tools/UnityProbe"]
 
 [tool.ruff]
 target-version = "py311"

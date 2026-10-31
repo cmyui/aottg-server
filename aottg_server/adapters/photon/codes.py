@@ -96,6 +96,8 @@ class ParameterCode(IntEnum):
 
 
 class EventCode(IntEnum):
+    SERVER_AUTHENTICATE = 198
+    SERVER_UNBAN = 199
     CLOSE_CONNECTION = 203
     TRANSFER_MASTER = 208
     ROOM_LIST = 230

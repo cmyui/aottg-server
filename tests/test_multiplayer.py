@@ -103,6 +103,31 @@ def test_only_master_can_send_kick_notification(
     assert len(guest.events(203)) == 1
 
 
+@pytest.mark.parametrize("code", [198, 199])
+def test_server_administration_is_never_relayed_or_cached(
+    game: tuple[MessageDispatcher, Client, Client], code: int
+) -> None:
+    dispatcher, host, guest = game
+    host.request(
+        dispatcher,
+        253,
+        {
+            244: v.ByteValue(code),
+            245: v.PropertyTable({v.ByteValue(0): v.StringValue("private-admin-input")}),
+            247: v.ByteValue(4),
+            246: v.ByteValue(1),
+        },
+    )
+    assert host.response(253)[0] == -3
+    assert not host.events(code)
+    assert not guest.events(code)
+    late = Client("late")
+    late.request(dispatcher, 230, {})
+    late.request(dispatcher, 226, {255: v.StringValue("city")})
+    assert not late.events(code)
+    assert all(b"private-admin-input" not in message for message in host.messages)
+
+
 def test_reserved_property_compare_and_swap_is_atomic(
     game: tuple[MessageDispatcher, Client, Client],
 ) -> None:
@@ -141,6 +166,40 @@ def test_silent_property_update_is_not_broadcast(
     )
     assert host.response(252)[0] == 0
     assert not guest.events(253)
+
+
+def test_round_restart_clears_all_owners_before_new_world_replay(
+    game: tuple[MessageDispatcher, Client, Client],
+) -> None:
+    dispatcher, host, guest = game
+    for client, event_code, cache_mode in ((host, 202, 4), (guest, 200, 4), (host, 202, 5)):
+        client.request(
+            dispatcher,
+            253,
+            {244: v.ByteValue(event_code), 247: v.ByteValue(cache_mode), 245: v.StringValue("old")},
+        )
+    # PUN DestroyAll first removes the entire cache (including global entries),
+    # then tells existing clients to destroy their local objects and load the scene.
+    host.request(dispatcher, 253, {244: v.ByteValue(0), 247: v.ByteValue(6), 246: v.ByteValue(2)})
+    host.request(
+        dispatcher,
+        253,
+        {244: v.ByteValue(207), 245: v.PropertyTable({v.ByteValue(0): v.IntegerValue(-1)})},
+    )
+    host.request(dispatcher, 253, {244: v.ByteValue(200), 245: v.StringValue("RPCLoadLevel")})
+    new_spawn = v.PropertyTable(
+        {v.ByteValue(0): v.StringValue("TITAN"), v.ByteValue(7): v.IntegerValue(1001)}
+    )
+    host.request(dispatcher, 253, {244: v.ByteValue(202), 247: v.ByteValue(4), 245: new_spawn})
+    late = Client("late")
+    late.request(dispatcher, 230, {})
+    late.request(dispatcher, 226, {255: v.StringValue("city")})
+    assert late.events(202) == [{254: v.IntegerValue(1), 245: new_spawn}]
+    assert not late.events(200)
+    assert not late.events(207)
+    live_events = [message[2] for message in guest.messages if message[:2] == b"\xf3\x04"]
+    assert live_events[-3:] == [200, 202, 255]  # Load, new world, late-player join.
+    assert live_events[live_events.index(207) + 1] == 200
 
 
 def test_boolean_join_or_create_and_lobby_property_filtering() -> None:
